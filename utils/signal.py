@@ -56,3 +56,28 @@ def random_walk(x):
 
 def running_mean(x, n_samples):
     return np.convolve(x, np.ones((n_samples,)) / n_samples)[(n_samples - 1):]
+
+
+def make_spikes(tc, peak_coords, spike_tc):
+    if not isinstance(peak_coords, (list, tuple, np.ndarray)):
+        peak_coords = [peak_coords]
+
+    spike_samples_before_peak = np.where(spike_tc == np.max(spike_tc))[0][0]
+
+    for peak in peak_coords:
+        spike_startsample = peak - spike_samples_before_peak
+        spike_endsample = spike_startsample + len(spike_tc)
+
+        if spike_startsample >= 0:
+            startsample = 0
+        else:
+            startsample = -spike_startsample
+            spike_startsample = 0
+        if spike_endsample <= len(tc):
+            endsample = 0
+        else:
+            endsample = len(spike_tc) - (spike_endsample - len(tc))
+            spike_endsample = 0
+
+        tc[spike_startsample:spike_endsample - 1] += spike_tc[startsample:endsample - 1]
+    return tc

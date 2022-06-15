@@ -1,6 +1,8 @@
 import matplotlib.pyplot as plt
 from typing import Any
 import pickle
+import random
+import numpy as np
 
 
 def normal_rows(matr):
@@ -41,3 +43,18 @@ def plot_data_sample(X, P, Y, i, j):
     ax3.plot(predicted_data)
     fig.set_size_inches(15, 5)
     plt.show()
+
+
+def ranks(sample):
+    indices = sorted(range(len(sample)), key=lambda i: sample[i])
+    return sorted(indices, key=lambda i: indices[i])
+
+
+def sample_with_minimum_distance(n=40, k=4, d=10):
+    sample = random.sample(range(n - (k - 1) * (d - 1)), k)
+    return np.array([s + (d - 1) * r for s, r in zip(sample, ranks(sample))])
+
+
+def zero_one(sig):
+    assert sig.ndim == 1
+    return (sig - sig.min()) / (sig.max() - sig.min())
