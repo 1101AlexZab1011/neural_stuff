@@ -81,3 +81,26 @@ def make_spikes(tc, peak_coords, spike_tc):
 
         tc[spike_startsample:spike_endsample - 1] += spike_tc[startsample:endsample - 1]
     return tc
+
+
+def make_artifacts(tc, center_coords, ratio, artifact_len, max_freq, additional_noise=0):
+    if not isinstance(center_coords, (list, tuple, np.ndarray)):
+        center_coords = [center_coords]
+
+    artifacts_bounds = []
+
+    for center in center_coords:
+        artifact_startsample = int(max(center - artifact_len // 2, 0))
+        artifact_endsample = artifact_startsample + artifact_len
+
+        if artifact_endsample >= len(tc):
+            artifact_endsample = 0
+
+        noise = band_limited_noise(np.random.randint(0, max_freq // 2), max_freq, len(tc), 1 / 500)
+        changed_len = len(tc[artifact_startsample:artifact_endsample - 1])
+        tc[artifact_startsample:artifact_endsample - 1] += ratio * noise[
+            artifact_startsample:artifact_endsample - 1
+        ] + additional_noise[:changed_len]
+        artifacts_bounds.append((artifact_startsample, artifact_endsample - 1))
+
+    return tc, artifacts_bounds

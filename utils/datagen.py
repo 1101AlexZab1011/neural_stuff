@@ -5,7 +5,8 @@ import random
 import mne
 from abc import ABC, abstractmethod
 from utils import sample_with_minimum_distance
-from utils.signal import random_walk, band_limited_noise, compute_morlet_cwt, make_spikes
+from utils.signal import random_walk, band_limited_noise, compute_morlet_cwt, make_spikes, make_artifacts
+from alltools.console.colored import warn
 
 
 class DatasetGenerator(ABC):
@@ -266,3 +267,143 @@ class SpikesDatasetGenerator(SignalGenerator):
                         sig = make_spikes(sig, peak, pos * amplitude_ratio * self._spike)
                 data.append(sig)
             yield np.array(data), peak_times
+
+
+class ArtifactsDatasetGenerator(SignalGenerator):
+    def __init__(
+        self,
+        tmin: Union[int, float],
+        tmax: Union[int, float],
+        sfreq: int,
+        n_artifacts: Union[int, tuple[int, int]],
+        n_channels: int,
+        hfreq: Optional[int] = None,
+        artifact_chance: Optional[float] = 1.,
+        minimum_artifact_len: Optional[float] = .01,
+        maximum_artifact_len: Optional[float] = 1.,
+        artifact_negativity_chance: Optional[float] = 0.,
+        artifact_exploding_chance: Optional[float] = 0.,
+        artifact_exploding_amplitude_deviation: Optional[Union[float, tuple[float, float]]] = 0.,
+        artifact_deviation: Optional[float] = 0.,
+        artifact_amplitude_deviation: Optional[Union[float, tuple[float, float]]] = 1,
+    ):
+        super().__init__(tmin, tmax, sfreq)
+        self._hfreq = self._sfreq // 2 if hfreq is None else hfreq
+        assert self._hfreq <= self._sfreq // 2, 'Nyquist criterion not met'
+        self._n_artifacts = n_artifacts
+        self._n_channels = n_channels
+        self._artifact_chance = artifact_chance
+        dev = int(np.rint(artifact_deviation * self._sfreq))
+        self._artifact_deviation = dev if dev > 0 else 1
+        self._artifact_amplitude_deviation = artifact_amplitude_deviation
+        self._artifact_negativity_chance = artifact_negativity_chance
+        self._minimum_artifact_len = int(minimum_artifact_len * self._sfreq)
+        self._maximum_artifact_len = int(maximum_artifact_len * self._sfreq)
+        self._artifact_exploding_chance = artifact_exploding_chance
+        self._artifact_exploding_amplitude_deviation = artifact_exploding_amplitude_deviation
+
+    def __call__(self, n_datasamples: int):
+        for i in range(n_datasamples):
+            n_artifacts = self._n_artifacts \
+                if isinstance(self._n_artifacts, int) \
+                else np.random.randint(*self._n_artifacts)
+            peak_times = sample_with_minimum_distance(
+                len(self._x),
+                n_artifacts,
+                self._maximum_artifact_len
+            )
+            peaks = np.array([
+                # to get rid of situation when peak goes out of signal
+                min(
+                    peak_time +\
+                    np.random.randint(2 * self._artifact_deviation) -\
+                    self._artifact_deviation,
+                    len(self._x) - 1
+                )
+                for peak_time in peak_times
+            ])
+            all_bounds = {peak: list() for peak in peaks}
+            # similar artifacts for the same peak
+            data = np.array([
+                sp.stats.zscore(random_walk(self._x)) +
+                sp.stats.zscore(
+                    band_limited_noise(
+                        0,
+                        self._hfreq,
+                        self._n_samples,
+                        samplespacing=1 / self._sfreq
+                    )
+                )
+                for _ in range(self._n_channels)
+            ])
+            for peak in peaks:
+                amplitude_ratio = self._artifact_amplitude_deviation\
+                    if isinstance(self._artifact_amplitude_deviation, (int, float))\
+                    else random.uniform(*self._artifact_amplitude_deviation)
+                artifact_len = np.random.randint(
+                    self._minimum_artifact_len,
+                    self._maximum_artifact_len
+                )
+                exploding_amplitude_ratio = self._artifact_exploding_amplitude_deviation\
+                    if isinstance(self._artifact_exploding_amplitude_deviation, (int, float))\
+                    else random.uniform(*self._artifact_exploding_amplitude_deviation)
+                exploding_len = np.random.randint(artifact_len // 2, artifact_len)
+                exploding = np.random.random() <= self._artifact_exploding_chance
+                for i, sig in enumerate(data):
+                    if np.random.random() <= self._artifact_chance:
+                        current_amplitude_ratio = random.uniform(
+                            .75 * amplitude_ratio,
+                            1.25 * amplitude_ratio
+                        )
+                        current_artifact_len = np.random.randint(
+                            max(self._minimum_artifact_len, (.75 * artifact_len)),
+                            min(int(1.25 * artifact_len), self._maximum_artifact_len))
+                        pos = -1 if np.random.random() <= self._artifact_negativity_chance else 1
+                        artifact_exploding = np.zeros(current_artifact_len - 1)
+                        if exploding:
+                            current_exploding_amplitude_ratio = random.uniform(
+                                .75 * exploding_amplitude_ratio,
+                                1.25 * exploding_amplitude_ratio
+                            )
+                            current_exploding_len = np.random.randint(
+                                min(int(.75 * exploding_len), .75 * current_artifact_len),
+                                min(int(1.25 * exploding_len), current_artifact_len)
+                            )
+                            start = np.random.randint(
+                                0,
+                                current_artifact_len - current_exploding_len
+                            )
+                            end = start + current_exploding_len
+                            artifact_exploding[start:end] += pos *\
+                                current_exploding_amplitude_ratio *\
+                                sp.signal.gaussian(
+                                current_exploding_len,
+                                np.random.randint(
+                                    current_exploding_len // 2,
+                                    current_exploding_len
+                                ),
+                            )
+                        sig, bounds = make_artifacts(
+                            sig,
+                            peak,
+                            current_amplitude_ratio,
+                            current_artifact_len,
+                            self._sfreq // 2,
+                            artifact_exploding
+                        )
+                        data[i] = sig
+                        all_bounds[peak].append(np.array(bounds))
+
+            out_bounds = list()
+            for center, bounds in all_bounds.items():
+                if bounds:
+                    out_bounds.append(
+                        [
+                            np.squeeze(np.array(bounds), axis=1)[:, 0].min(),
+                            np.squeeze(np.array(bounds), axis=1)[:, 1].max()
+                        ]
+                    )
+                else:
+                    warn(f'Empty bounds at {center} for {i}th datasample')
+
+            yield np.array(data), np.array(out_bounds)
